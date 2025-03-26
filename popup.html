@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Nashville Parcel Analyzer</title>
+    <style>
+        body {
+            width: 280px;
+            padding: 15px;
+            font-family: Arial, sans-serif;
+        }
+        h1 {
+            font-size: 16px;
+            margin-top: 0;
+            color: #333;
+        }
+        .info {
+            font-size: 14px;
+            line-height: 1.4;
+            color: #555;
+            margin-bottom: 15px;
+        }
+        .button {
+            background-color: #0079c1;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            display: block;
+            width: 100%;
+            text-align: center;
+            margin-top: 10px;
+        }
+        .button:hover {
+            background-color: #005e95;
+        }
+    </style>
+</head>
+<body>
+    <h1>Nashville Parcel Analyzer</h1>
+    <div class="info">
+        <p>This extension helps you analyze and download data from Nashville's ArcGIS Parcel Viewer.</p>
+        <p><strong>Instructions:</strong></p>
+        <ol>
+            <li>Select a property and click "Set as SITE"</li>
+            <li>Select adjacent properties and check "Include in download"</li>
+            <li>Click "Download Selected Data" to get PDF files</li>
+        </ol>
+    </div>
+    <button id="screenshotBtn" class="button">Take Screenshot</button>
+    
+    <script src="popup.js"></script>
+</body>
+</html>

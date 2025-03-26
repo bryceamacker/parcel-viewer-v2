@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Nashville Parcel Analyzer v2",
+  "version": "2.0",
+  "description": "Analyzes adjacent properties in Nashville ArcGIS Parcel Viewer",
+  "permissions": [
+    "activeTab",
+    "downloads",
+    "webRequest",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://experience.arcgis.com/*",
+    "https://www.davidsonportal.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "128": "icon.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://experience.arcgis.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
