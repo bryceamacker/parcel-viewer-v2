@@ -7,7 +7,8 @@
     "activeTab",
     "downloads",
     "webRequest",
-    "tabs"
+    "tabs",
+    "scripting"
   ],
   "host_permissions": [
     "https://experience.arcgis.com/*",
@@ -26,7 +27,11 @@
     {
       "matches": ["https://experience.arcgis.com/*"],
       "js": ["content.js"],
-      "run_at": "document_idle"
+      "run_at": "document_start"
     }
-  ]
+  ],
+  "web_accessible_resources": [{
+      "resources": ["highlight_parcel.js"],
+      "matches": ["<all_urls>"]
+  }]
 }

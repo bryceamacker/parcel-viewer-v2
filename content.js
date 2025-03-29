@@ -1,4 +1,12 @@
 // content.js for the new ArcGIS Experience site
+function injectScript (src) {
+    const s = document.createElement('script');
+    s.src = chrome.runtime.getURL(src);
+    s.onload = () => s.remove();
+    (document.head || document.documentElement).append(s);
+}
+
+injectScript('highlight_parcel.js')
 
 // Inject stylesheet
 function injectStyles() {
@@ -203,6 +211,11 @@ class ParcelAnalyzer {
                     const featureInfoWidgetElement = generalInfoContent.querySelector('.widget-featureInfo');
                     if (featureInfoWidgetElement) {
                         this.extractPropertyInfo(featureInfoWidgetElement); // Pass specific context
+                        // Send a message to the page context to highlight the parcel
+                        window.postMessage({
+                            type: 'HIGHLIGHT_PARCEL',
+                            parcelId: this.currentProperty.parcelId
+                        }, '*');
                     } else {
                         console.warn("Found heading but couldn't find .widget-featureInfo container for extraction context. Extracting globally.");
                         this.extractPropertyInfo(); // Fallback to global context
