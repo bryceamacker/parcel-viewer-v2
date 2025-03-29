@@ -151,6 +151,10 @@ The extension uses several key data structures to manage state:
 3. **Highlight Handles**:
    - Array of references to active highlight effects on the map.
    - Used to properly clean up highlights when selections change.
+   
+4. **State Tracking Variables**:
+   - `lastProcessedParcelId`: Tracks the most recently processed parcel to avoid duplicate processing
+   - `isProcessing`: Flag to prevent concurrent processing of property selections
 
 ### 3.3 Communication Flow
 
@@ -366,101 +370,112 @@ This approach allows the extension to find and extract URLs to property document
 
 ### 4.3 Integration with ArcGIS
 
-The extension attempts to integrate with the ArcGIS JavaScript API to highlight selected parcels directly on the map:
+The extension integrates with the ArcGIS JavaScript API through two approaches:
+
+1. **Injected Page Script**: A script injected into the page context that can directly access the ArcGIS API objects.
+2. **Content Script Communication**: The extension's content script communicates with the injected script via window.postMessage.
+
+This two-part approach allows the extension to highlight parcels directly on the map:
 
 ```javascript
-tryAccessArcGIS() {
-    console.log('Attempting to access ArcGIS JavaScript API...');
+// In content.js - ParcelAnalyzer class
+refreshHighlights() {
+    console.log("Refreshing highlights for all selected properties");
     
-    // Function to find and store the map view
-    const findMapView = () => {
-        // Check for global esri object
-        if (window.__esri) {
-            console.log('Found __esri object');
-            
-            // Try to find the view instance
-            if (this.mapView) return;  // Already found
-            
-            // Look for view instances in the DOM
-            const viewNodes = document.querySelectorAll('.esri-view');
-            for (const node of viewNodes) {
-                // Access the view instance through the __esri property
-                if (node.__esri && node.__esri.view) {
-                    this.mapView = node.__esri.view;
-                    console.log('Found map view:', this.mapView);
-                    return;
-                }
+    // Clear all existing highlights
+    window.postMessage({ type: 'CLEAR_PARCEL_HIGHLIGHTS' }, '*');
+    
+    // Highlight the site property if set
+    if (this.siteProperty) {
+        console.log(`Re-highlighting SITE property: ${this.siteProperty.parcelId}`);
+        window.postMessage({
+            type: 'HIGHLIGHT_PARCEL',
+            parcelId: this.siteProperty.parcelId,
+            forceHighlight: true,
+            noZoom: true
+        }, '*');
+        
+        // Highlight all selected adjacent properties
+        if (this.selectedProperties.size > 0) {
+            console.log(`Re-highlighting ${this.selectedProperties.size} adjacent properties`);
+            for (const property of this.selectedProperties.values()) {
+                window.postMessage({
+                    type: 'HIGHLIGHT_PARCEL',
+                    parcelId: property.parcelId,
+                    forceHighlight: true,
+                    noZoom: true
+                }, '*');
             }
         }
-        
-        // Alternative method: look for view widgets
-        const viewWidgets = document.querySelectorAll('.esri-view-surface');
-        if (viewWidgets.length > 0) {
-            console.log('Found view surface widgets:', viewWidgets.length);
-            
-            // Try to access the widget's view property
-            for (const widget of viewWidgets) {
-                if (widget.__esri && widget.__esri.view) {
-                    this.mapView = widget.__esri.view;
-                    console.log('Found map view from widget:', this.mapView);
-                    return;
-                }
-            }
-        }
-        
-        console.log('Could not find map view instance');
-    };
-    
-    // Try multiple times to account for asynchronous loading
-    findMapView();
-    setTimeout(findMapView, 2000);
-    setTimeout(findMapView, 5000);
+    }
 }
 ```
 
-Once the map view is obtained, the extension can highlight parcels:
-
 ```javascript
-highlightSelectedParcels() {
-    // Clear any existing highlights
-    this.clearHighlights();
-    
-    // Check if we have access to the map view
-    if (!this.mapView) {
-        console.log('Cannot highlight parcels - no map view available');
+// In highlight_parcel.js (injected into page context)
+async function highlightParcelByParcelId(parcelId, forceHighlight = false, noZoom = false) {
+    // Skip if this is the same parcel already highlighted and not forcing highlight
+    if (parcelId === window._lastHighlightedParcelId && !forceHighlight) {
         return;
     }
     
+    console.log('Highlighting parcel:', parcelId);
+    window._lastHighlightedParcelId = parcelId;
+    
     try {
-        console.log('Highlighting selected parcels with ArcGIS API');
+        // Access the map view manager and highlight the parcel
+        let mapView = null;
+        // ... get map view ...
         
-        // Highlight site property
-        if (this.siteProperty && this.siteProperty.feature) {
-            const siteHighlight = this.mapView.highlight(this.siteProperty.feature);
-            if (siteHighlight) {
-                this.highlightHandles.push(siteHighlight);
-                console.log('Added highlight for site property');
-            }
+        // Find the parcel layer
+        let parcelLayer = mapView.map.allLayers.find(layer => 
+            layer.title === "Parcels Identify" && layer.type === 'feature');
+        
+        // Query for the OBJECTID using parcel ID
+        const query = parcelLayer.createQuery();
+        query.where = `UPPER(STANPAR) = UPPER('${parcelId.replace("'", "''")}')`;
+        // ... configure query ...
+        
+        const results = await parcelLayer.queryFeatures(query);
+        
+        // Apply highlight
+        const parcelLayerView = await mapView.whenLayerView(parcelLayer);
+        const newHighlightHandle = parcelLayerView.highlight(objectIdToHighlight);
+        window._parcelHighlightHandles.push(newHighlightHandle);
+        
+        // Conditionally zoom to feature
+        if (featureGeometry && !noZoom) {
+            mapView.goTo(featureGeometry.extent.expand(1.5));
+        } else if (featureGeometry && noZoom) {
+            console.log("Skipping zoom as requested.");
         }
-        
-        // Highlight selected properties
-        this.selectedProperties.forEach(property => {
-            if (property.feature) {
-                const highlight = this.mapView.highlight(property.feature);
-                if (highlight) {
-                    this.highlightHandles.push(highlight);
-                    console.log('Added highlight for selected property:', property.parcelId);
-                }
-            }
-        });
-        
     } catch (error) {
-        console.error('Error highlighting parcels:', error);
+        console.error('Error in highlightParcelByParcelId:', error);
     }
 }
 ```
 
-This approach allows for direct visual feedback on the map when properties are selected.
+This approach provides important benefits:
+1. **Selective Highlighting**: Only the SITE property and explicitly selected adjacent properties are highlighted
+2. **No Automatic Zooming**: The `noZoom` option prevents disrupting the user's map view
+3. **Consistent Experience**: Highlights persist when browsing between different properties
+4. **Multiple Highlights**: Multiple parcels can be highlighted simultaneously
+
+The extension maintains an array of highlight handles to properly manage and clean up highlights:
+
+```javascript
+function clearAllParcelHighlights() {
+    if (window._parcelHighlightHandles && window._parcelHighlightHandles.length > 0) {
+        window._parcelHighlightHandles.forEach(handle => {
+            if (handle && typeof handle.remove === 'function') {
+                handle.remove();
+            }
+        });
+        window._parcelHighlightHandles = []; // Clear the array
+        window._lastHighlightedParcelId = null; // Reset tracking
+    }
+}
+```
 
 ### 4.4 DOM Manipulation
 
@@ -837,10 +852,10 @@ This flow ensures that user actions are properly captured, processed, and reflec
 
 **Challenge**: The ArcGIS JavaScript API is not directly accessible to the content script, making it difficult to highlight parcels programmatically.
 
-**Solution**: The extension attempts multiple approaches to access the API:
-1. Looking for the global `__esri` object
-2. Searching the DOM for nodes with API references
-3. Falling back to visual markers when API access isn't available
+**Solution**: The extension uses a two-part approach:
+1. Inject a script into the page context that can access the ArcGIS API
+2. Use window.postMessage for communication between the content script and injected script
+3. Track highlighted parcels to avoid redundant operations
 
 ### 7.2 DOM Structure Variability
 
@@ -849,9 +864,25 @@ This flow ensures that user actions are properly captured, processed, and reflec
 **Solution**: The extension uses flexible selectors and multiple fallback strategies:
 1. Multiple methods to extract property information
 2. Several approaches to insert UI controls
-3. Interval-based checks in addition to MutationObserver
+3. Targeted MutationObserver configuration to efficiently detect relevant changes
 
-### 7.3 PDF Extraction
+### 7.3 Performance Optimization
+
+**Challenge**: The initial implementation caused performance issues by constantly checking properties and highlighting parcels.
+
+**Solution**: The extension now uses a reactive approach:
+1. MutationObserver is configured to only watch for relevant DOM changes
+2. State tracking with `lastProcessedParcelId` prevents redundant processing
+3. Concurrency protection with `isProcessing` flag prevents race conditions
+4. Highlights are only refreshed when properties change or are selected/deselected
+
+The result is a much more efficient extension that:
+- Only processes DOM changes when relevant to the extension's functionality
+- Avoids duplicate highlight operations for the same parcel
+- Prevents unnecessary zooming that disrupts the user experience
+- Maintains highlight consistency when browsing between properties
+
+### 7.4 PDF Extraction
 
 **Challenge**: PDF links can be structured differently or may not be immediately available when a property is selected.
 
@@ -860,7 +891,7 @@ This flow ensures that user actions are properly captured, processed, and reflec
 2. Checking adjacent cells for links
 3. Robust error handling to prevent failures
 
-### 7.4 Visual Feedback
+### 7.5 Visual Feedback
 
 **Challenge**: Providing clear visual feedback for selected properties without direct access to the map data.
 
@@ -923,10 +954,10 @@ The extension can be developed and tested using the following workflow:
    - Caching downloaded PDFs for faster access.
    - Batch operations for larger property analyses.
 
-3. **Enhanced User Interface**:
-   - Dedicated side panel instead of injected controls.
-   - Custom layer for property visualization.
-   - Interactive property selection tools.
+3. **Enhanced Performance**:
+   - Further optimization of MutationObserver strategies
+   - Smarter caching of property data to reduce API queries
+   - Worker-based background processing for heavy operations
 
 ### 9.2 Feature Extensions
 
