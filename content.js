@@ -156,11 +156,12 @@ class ParcelAnalyzer {
     constructor() {
         this.siteProperty = null;
         this.currentProperty = null;
+        this.lastProcessedParcelId = null; // Track the last processed parcel ID
         this.selectedProperties = new Map(); // Map to store selected properties
         this.markers = [];
         this.featureObserver = null;
         this.observerTimeout = null;
-        this.checkInterval = null;
+        this.isProcessing = false; // Flag to prevent concurrent processing
         
         // Bind methods to ensure 'this' context is preserved
         this.extractPropertyInfo = this.extractPropertyInfo.bind(this);
@@ -170,6 +171,7 @@ class ParcelAnalyzer {
         this.togglePropertySelection = this.togglePropertySelection.bind(this);
         this.updatePropertyName = this.updatePropertyName.bind(this);
         this.downloadSelectedData = this.downloadSelectedData.bind(this);
+        this.checkForPropertySelection = this.checkForPropertySelection.bind(this);
         
         // Setup observer and other initialization
         this.setupFeatureObserver();
@@ -191,125 +193,76 @@ class ParcelAnalyzer {
     setupFeatureObserver() {
         console.log('Setting up feature observer');
         
-        const checkForPropertySelection = () => {
-            // --- Target the General Info panel's content area using aria-label ---
-            // Find the header with the specific aria-label
-            const generalInfoHeader = document.querySelector('.panel-header[aria-label="General Info"]');
-            // Navigate up to the common parent (.panel) and then down to the content area (.panel-content)
-            const generalInfoPanel = generalInfoHeader?.closest('.panel');
-            const generalInfoContent = generalInfoPanel?.querySelector('.panel-content');
-
-            if (generalInfoContent) {
-                // --- Check if the Feature Info widget's content (heading) is loaded *within* the General Info panel ---
-                const featureInfoHeading = generalInfoContent.querySelector('.widget-featureInfo .esri-features__heading');
-
-                if (featureInfoHeading) {
-                    // Successfully found the target panel and the feature info is displayed
-                    console.log('General Info panel with feature info found:', featureInfoHeading.textContent);
-
-                    // Extract property info using the feature info widget as context
-                    const featureInfoWidgetElement = generalInfoContent.querySelector('.widget-featureInfo');
-                    if (featureInfoWidgetElement) {
-                        this.extractPropertyInfo(featureInfoWidgetElement); // Pass specific context
-                        // Send a message to the page context to highlight the parcel
-                        window.postMessage({
-                            type: 'HIGHLIGHT_PARCEL',
-                            parcelId: this.currentProperty.parcelId
-                        }, '*');
-                    } else {
-                        console.warn("Found heading but couldn't find .widget-featureInfo container for extraction context. Extracting globally.");
-                        this.extractPropertyInfo(); // Fallback to global context
-                    }
-
-                    // Add or update controls *within* the General Info panel's content area
-                    this.addOrUpdateCustomControls(generalInfoContent);
-
-                } else {
-                    // Panel content is there, but feature heading isn't, meaning no feature is selected or it cleared
-                    // console.log('General Info content panel found, but no feature heading detected.');
-                    // Remove existing controls from this specific panel if no feature is displayed
-                    const existingControls = generalInfoContent.querySelector('.parcel-analyzer-controls');
-                    if (existingControls) {
-                        console.log('Removing stale controls from General Info panel.');
-                        existingControls.remove();
-                        this.currentProperty = null; // Clear current property state
-                    }
-                }
-
-            } else {
-                // The primary target panel itself wasn't found
-                // console.log('General Info panel content area not found.');
-                // Clean up any floating controls if they exist from previous incorrect insertions
-                document.querySelector('.parcel-analyzer-controls.floating')?.remove();
-            }
-
-            // --- Secondary check for floating popup (Keep this minimal) ---
-            const floatingPopup = document.querySelector('.esri-popup--is-docked .esri-features__heading');
-            if (floatingPopup && !generalInfoContent) { // Only log if general info wasn't found
-                console.log('Floating popup detected, but target is General Info panel. Ignoring.');
-            }
-        };
-
-        // Initial checks with delays
-        setTimeout(checkForPropertySelection, 1500); // Increased delay slightly
-        setTimeout(checkForPropertySelection, 3000);
-
+        // Initial check with delay
+        setTimeout(this.checkForPropertySelection, 2000);
 
         // Create a mutation observer to watch for changes
         this.featureObserver = new MutationObserver((mutations) => {
-            // Basic check if relevant nodes were added/removed or text changed
+            // Check if any mutations are relevant to our feature displays
             let relevantChange = false;
-            for (const mutation of mutations) {
-                if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
-                     // Check if added/removed nodes might contain our target elements
-                     const checkNodes = (nodes) => {
-                         for(const node of nodes) {
-                             if (node.nodeType === Node.ELEMENT_NODE) {
-                                 if (node.matches?.('.panel-header[aria-label="General Info"], .widget-featureInfo, .esri-features__heading, .parcel-analyzer-controls')) {
-                                     return true;
-                                 }
-                                 // Check children recursively (might be too slow if not careful)
-                                 // if (node.querySelector?.('.panel-header[aria-label="General Info"], .widget-featureInfo, .esri-features__heading')) {
-                                 //     return true;
-                                 // }
-                             }
-                         }
-                         return false;
-                     }
-                     if(checkNodes(mutation.addedNodes) || checkNodes(mutation.removedNodes)) {
-                         relevantChange = true;
-                         break;
-                     }
-
-                } else if (mutation.type === 'characterData' && mutation.target.parentElement?.closest('.esri-features__heading')) {
-                     relevantChange = true; // Heading text changed
-                     break;
-                } else if (mutation.type === 'attributes' && mutation.attributeName === 'class' && mutation.target.matches?.('.layout-item, .panel, .jimu-widget')) {
-                     // Class changes might indicate visibility toggle or loading state
-                     relevantChange = true;
-                     break;
+            
+            // Quick check for map interaction events that might indicate user clicked on a parcel
+            const mapInteraction = mutations.some(mutation => 
+                mutation.target.classList?.contains('esri-view') || 
+                mutation.target.classList?.contains('esri-view-surface') ||
+                mutation.target.closest?.('.esri-view-surface, .esri-view')
+            );
+            
+            if (mapInteraction) {
+                relevantChange = true;
+            } else {
+                // More thorough check for specific UI components we care about
+                for (const mutation of mutations) {
+                    // Check for panel changes (additions/removals)
+                    if (mutation.type === 'childList' && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0)) {
+                        const hasRelevantNodes = Array.from(mutation.addedNodes).some(node => 
+                            node.nodeType === Node.ELEMENT_NODE && (
+                                node.matches?.('.esri-features__heading, .widget-featureInfo') ||
+                                node.querySelector?.('.esri-features__heading, .widget-featureInfo')
+                            )
+                        ) || Array.from(mutation.removedNodes).some(node =>
+                            node.nodeType === Node.ELEMENT_NODE && (
+                                node.matches?.('.esri-features__heading, .widget-featureInfo') ||
+                                node.querySelector?.('.esri-features__heading, .widget-featureInfo')
+                            )
+                        );
+                        
+                        if (hasRelevantNodes) {
+                            relevantChange = true;
+                            break;
+                        }
+                    }
+                    // Check for text changes in feature headings
+                    else if (mutation.type === 'characterData' && 
+                             mutation.target.parentElement?.closest?.('.esri-features__heading')) {
+                        relevantChange = true;
+                        break;
+                    }
+                    // Check for class/visibility changes on panels
+                    else if (mutation.type === 'attributes' && 
+                             mutation.attributeName === 'class' && 
+                             mutation.target.classList?.contains('panel-content')) {
+                        relevantChange = true;
+                        break;
+                    }
                 }
             }
 
             if (relevantChange) {
                 // Debounce the handler
                 clearTimeout(this.observerTimeout);
-                this.observerTimeout = setTimeout(checkForPropertySelection, 350); // Slightly longer debounce
+                this.observerTimeout = setTimeout(this.checkForPropertySelection, 350);
             }
         });
 
-
-        // Observe the entire document body - necessary for dynamically loaded content
+        // Observe the entire document body - but with more specific filters
         this.featureObserver.observe(document.body, {
             childList: true,
             subtree: true,
             attributes: true,
-            attributeFilter: ['class', 'style'], // Observe common dynamic attributes
+            attributeFilter: ['class', 'style'], // Only observe relevant attributes
             characterData: true
         });
-
-        // Fallback interval check (less frequent)
-        this.checkInterval = setInterval(checkForPropertySelection, 2500);
     }
 
     addFloatingControlPanel() {
@@ -345,6 +298,12 @@ class ParcelAnalyzer {
             }
 
             const headerText = header.textContent.trim();
+            
+            // Skip processing if the header text is the same as what we've already processed
+            if (this.currentProperty && headerText === `${this.currentProperty.parcelId} : ${this.currentProperty.address}`) {
+                return this.currentProperty;
+            }
+            
             console.log('Found header text:', headerText);
 
             let parcelId = null;
@@ -537,6 +496,7 @@ class ParcelAnalyzer {
              downloadButton.textContent = 'Download Selected Data';
              downloadButton.style.fontSize = '16px';
              downloadButton.style.padding = '12px 16px';
+             downloadButton.addEventListener('click', () => this.downloadSelectedData());
              // downloadButton.style.marginTop = '15px'; // Already has margin via class
              controlsContainer.appendChild(downloadButton);
          }
@@ -576,6 +536,10 @@ class ParcelAnalyzer {
 
     setSiteProperty() {
         if (!this.currentProperty) return;
+        
+        // Clear any existing highlights before setting new site
+        window.postMessage({ type: 'CLEAR_PARCEL_HIGHLIGHTS' }, '*');
+        
         this.siteProperty = {...this.currentProperty};
         this.selectedProperties.clear();
         this.refreshMarkers();
@@ -588,9 +552,20 @@ class ParcelAnalyzer {
             console.warn('Could not find General Info panel to refresh controls after setting site.');
         }
         console.log('Set site property:', this.siteProperty);
+        
+        // Force highlight the site property, but don't zoom
+        window.postMessage({
+            type: 'HIGHLIGHT_PARCEL',
+            parcelId: this.siteProperty.parcelId,
+            forceHighlight: true,
+            noZoom: true
+        }, '*');
     }
 
     unsetSiteProperty() {
+        // Clear all highlights
+        window.postMessage({ type: 'CLEAR_PARCEL_HIGHLIGHTS' }, '*');
+        
         this.siteProperty = null;
         this.selectedProperties.clear();
         this.refreshMarkers();
@@ -630,9 +605,20 @@ class ParcelAnalyzer {
                 customName: customName || this.getAutoAssignedName()
             });
             console.log(`Selected property ${parcelId} with name "${customName || this.getAutoAssignedName()}"`);
+            
+            // Highlight this property as it's been selected
+            window.postMessage({
+                type: 'HIGHLIGHT_PARCEL',
+                parcelId: parcelId,
+                forceHighlight: true,
+                noZoom: true
+            }, '*');
         } else {
             this.selectedProperties.delete(parcelId);
             console.log(`Deselected property ${parcelId}`);
+            
+            // Refresh highlights - clear all and re-highlight just the active ones
+            this.refreshHighlights();
         }
         this.refreshMarkers();
     }
@@ -647,6 +633,9 @@ class ParcelAnalyzer {
             this.selectedProperties.set(parcelId, property);
             this.refreshMarkers();
             console.log(`Updated name for property ${parcelId} to "${property.customName}"`);
+            
+            // Also refresh highlights to ensure consistency
+            this.refreshHighlights();
         } else {
              // console.log(`Property ${parcelId} not selected, name update ignored.`);
         }
@@ -758,6 +747,100 @@ class ParcelAnalyzer {
          await downloadLink(property.pdfLinks.parcelInstrument, 'Parcel');
 
          return initiatedDownloads;
+    }
+
+    checkForPropertySelection() {
+        // Prevent concurrent processing
+        if (this.isProcessing) return;
+        this.isProcessing = true;
+
+        try {
+            // --- Target the General Info panel's content area using aria-label ---
+            // Find the header with the specific aria-label
+            const generalInfoHeader = document.querySelector('.panel-header[aria-label="General Info"]');
+            // Navigate up to the common parent (.panel) and then down to the content area (.panel-content)
+            const generalInfoPanel = generalInfoHeader?.closest('.panel');
+            const generalInfoContent = generalInfoPanel?.querySelector('.panel-content');
+
+            if (generalInfoContent) {
+                // --- Check if the Feature Info widget's content (heading) is loaded *within* the General Info panel ---
+                const featureInfoHeading = generalInfoContent.querySelector('.widget-featureInfo .esri-features__heading');
+
+                if (featureInfoHeading) {
+                    // Extract property info using the feature info widget as context
+                    const featureInfoWidgetElement = generalInfoContent.querySelector('.widget-featureInfo');
+                    if (featureInfoWidgetElement) {
+                        const propertyInfo = this.extractPropertyInfo(featureInfoWidgetElement); // Pass specific context
+                        
+                        // Only process if this is a new property or different from last processed
+                        if (propertyInfo && propertyInfo.parcelId !== this.lastProcessedParcelId) {
+                            console.log('General Info panel with feature info found:', featureInfoHeading.textContent);
+                            this.lastProcessedParcelId = propertyInfo.parcelId;
+                            
+                            // Add or update controls *within* the General Info panel's content area
+                            this.addOrUpdateCustomControls(generalInfoContent);
+                            
+                            // Always refresh highlights when switching between properties
+                            this.refreshHighlights();
+                        }
+                    } else {
+                        console.warn("Found heading but couldn't find .widget-featureInfo container for extraction context. Extracting globally.");
+                        this.extractPropertyInfo(); // Fallback to global context
+                    }
+                } else {
+                    // Panel content is there, but feature heading isn't, meaning no feature is selected or it cleared
+                    // Remove existing controls from this specific panel if no feature is displayed
+                    const existingControls = generalInfoContent.querySelector('.parcel-analyzer-controls');
+                    if (existingControls) {
+                        console.log('Removing stale controls from General Info panel.');
+                        existingControls.remove();
+                        this.currentProperty = null; // Clear current property state
+                        this.lastProcessedParcelId = null; // Reset last processed ID
+                        
+                        // Clear highlights when no property is selected
+                        window.postMessage({ type: 'CLEAR_PARCEL_HIGHLIGHTS' }, '*');
+                    }
+                }
+            } else {
+                // The primary target panel itself wasn't found
+                // Clean up any floating controls if they exist from previous incorrect insertions
+                document.querySelector('.parcel-analyzer-controls.floating')?.remove();
+            }
+        } finally {
+            this.isProcessing = false;
+        }
+    }
+
+    // Enhanced refreshHighlights method to be more robust
+    refreshHighlights() {
+        console.log("Refreshing highlights for all selected properties");
+        
+        // Clear all existing highlights
+        window.postMessage({ type: 'CLEAR_PARCEL_HIGHLIGHTS' }, '*');
+        
+        // Highlight the site property if set
+        if (this.siteProperty) {
+            console.log(`Re-highlighting SITE property: ${this.siteProperty.parcelId}`);
+            window.postMessage({
+                type: 'HIGHLIGHT_PARCEL',
+                parcelId: this.siteProperty.parcelId,
+                forceHighlight: true,
+                noZoom: true
+            }, '*');
+            
+            // Highlight all selected adjacent properties
+            if (this.selectedProperties.size > 0) {
+                console.log(`Re-highlighting ${this.selectedProperties.size} adjacent properties`);
+                for (const property of this.selectedProperties.values()) {
+                    window.postMessage({
+                        type: 'HIGHLIGHT_PARCEL',
+                        parcelId: property.parcelId,
+                        forceHighlight: true,
+                        noZoom: true
+                    }, '*');
+                }
+            }
+        }
     }
 }
 

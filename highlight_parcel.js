@@ -4,9 +4,22 @@ if (!window._parcelHighlightHandles) {
     console.log("Initialized _parcelHighlightHandles array.");
 }
 
+// Track the last highlighted parcel to prevent redundant operations
+if (!window._lastHighlightedParcelId) {
+    window._lastHighlightedParcelId = null;
+}
+
 // This script runs in the page context (not extension context)
-async function highlightParcelByParcelId(parcelId) {
+async function highlightParcelByParcelId(parcelId, forceHighlight = false, noZoom = false) {
+    // Skip if this is the same parcel we already highlighted and not forcing a highlight
+    if (parcelId === window._lastHighlightedParcelId && !forceHighlight) {
+        // console.log('Skipping highlight for already highlighted parcel:', parcelId);
+        return;
+    }
+    
     console.log('Highlighting parcel:', parcelId);
+    window._lastHighlightedParcelId = parcelId;
+    
     try {
         // Access the map view manager and highlight the parcel
         // This can access page-level objects like _mapViewManager that extension can't directly access
@@ -91,12 +104,14 @@ async function highlightParcelByParcelId(parcelId) {
        window._parcelHighlightHandles.push(newHighlightHandle); // STORE IN ARRAY
        console.log(`Highlight applied. Total highlights: ${window._parcelHighlightHandles.length}`);
 
-       // --- Optional: Zoom to the highlighted feature ---
-       if (featureGeometry) {
+       // --- Optional: Zoom to the highlighted feature (skip if noZoom is true) ---
+       if (featureGeometry && !noZoom) {
             console.log("Zooming to feature...");
             mapView.goTo(featureGeometry.extent.expand(1.5))
                .then(() => console.log("Zoomed to feature."))
                .catch(err => console.warn("Could not zoom to feature:", err));
+       } else if (featureGeometry && noZoom) {
+            console.log("Skipping zoom as requested.");
        } else {
             console.warn(`Geometry not available for OBJECTID ${objectIdToHighlight} to zoom.`);
        }
@@ -114,7 +129,11 @@ window.addEventListener('message', function(event) {
     
     // Check if this is our highlight message
     if (event.data.type === 'HIGHLIGHT_PARCEL' && event.data.parcelId) {
-        highlightParcelByParcelId(event.data.parcelId);
+        const forceHighlight = event.data.forceHighlight === true;
+        const noZoom = event.data.noZoom === true;
+        highlightParcelByParcelId(event.data.parcelId, forceHighlight, noZoom);
+    } else if (event.data.type === 'CLEAR_PARCEL_HIGHLIGHTS') {
+        clearAllParcelHighlights();
     }
 }, false);
 
@@ -129,6 +148,7 @@ function clearAllParcelHighlights() {
             }
         });
         window._parcelHighlightHandles = []; // Clear the array
+        window._lastHighlightedParcelId = null; // Reset the tracking variable
         console.log("All parcel highlights cleared.");
     } else {
         console.log("No active parcel highlights to clear.");
